@@ -27,7 +27,7 @@ def getConnection():
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASS"],
         port=1433,
-        ca_file=certifi.where(),
+        cafile=certifi.where(),
         validate_hostname=True
     )
 
@@ -123,6 +123,7 @@ def error_de_bd():
 
 # GET: obtener todos los productos
 @app.route("/api/products", methods=["GET"])
+@app.route("/api/productos", methods=["GET"])
 def get_products():
     try:
         with abrir_bd() as (conn, cursor):
