@@ -28,7 +28,7 @@ def getConnection():
         password=os.environ["DB_PASS"],
         port=1433,
         cafile=certifi.where(),
-        validate_hostname=True
+        validate_host=True
     )
 
 
