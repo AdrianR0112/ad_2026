@@ -1,17 +1,29 @@
 from flask import Flask, jsonify, request
 from contextlib import contextmanager
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from html import escape
 import os
+import re
 import threading
 import time
+from zoneinfo import ZoneInfo
 import certifi
 import pytds
+import requests
 
 app = Flask(__name__)
 
 # El bloqueo protege las solicitudes que lleguen a este proceso Python.
 # No sincroniza automáticamente dos servidores Flask diferentes.
 product_lock = threading.Lock()
+EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+RESEND_API_URL = "https://api.resend.com/emails"
+ECUADOR_TIMEZONE = ZoneInfo("America/Guayaquil")
+
+
+class ResendAPIError(Exception):
+    """Error controlado al solicitar el envío de un correo a Resend."""
 
 
 @app.after_request
@@ -58,6 +70,127 @@ def producto_a_diccionario(row):
         "stock": int(row.stock),
         "version": int(row.version),
     }
+
+
+def consultar_productos(cursor):
+    cursor.execute(
+        "SELECT id, names, price, stock, version FROM Products ORDER BY id"
+    )
+    return [producto_a_diccionario(row) for row in cursor.fetchall()]
+
+
+def crear_resumen_productos(products):
+    total_stock = sum(product["stock"] for product in products)
+    inventory_value = sum(
+        Decimal(str(product["price"])) * product["stock"]
+        for product in products
+    )
+    return total_stock, inventory_value
+
+
+def construir_correo_productos(products, fecha_consulta):
+    total_stock, inventory_value = crear_resumen_productos(products)
+    rows = "".join(
+        """
+        <tr>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb;">{name}</td>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb;text-align:right;">${price:.2f}</td>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb;text-align:right;">{stock}</td>
+        </tr>
+        """.format(
+            name=escape(product["name"]),
+            price=product["price"],
+            stock=product["stock"],
+        )
+        for product in products
+    )
+
+    if not rows:
+        rows = """
+        <tr>
+            <td colspan="3" style="padding:16px;text-align:center;color:#6b7280;">
+                No hay productos registrados.
+            </td>
+        </tr>
+        """
+
+    fecha_texto = fecha_consulta.strftime("%d/%m/%Y %H:%M:%S")
+    return f"""
+    <!doctype html>
+    <html lang="es">
+    <body style="margin:0;background:#f3f4f6;font-family:Arial,sans-serif;color:#111827;">
+        <div style="max-width:680px;margin:0 auto;padding:32px 16px;">
+            <div style="background:#ffffff;border-radius:16px;padding:30px;box-shadow:0 8px 24px rgba(15,23,42,.08);">
+                <h1 style="margin:0 0 8px;color:#123c78;">Consulta del catálogo</h1>
+                <p style="margin:0 0 24px;color:#4b5563;">
+                    Resumen generado desde la API Flask y Azure SQL.
+                </p>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;">
+                    <div style="flex:1;min-width:150px;background:#eff6ff;border-radius:12px;padding:16px;">
+                        <strong style="display:block;font-size:28px;color:#1d4ed8;">{len(products)}</strong>
+                        Productos registrados
+                    </div>
+                    <div style="flex:1;min-width:150px;background:#ecfdf5;border-radius:12px;padding:16px;">
+                        <strong style="display:block;font-size:28px;color:#047857;">{total_stock}</strong>
+                        Unidades en stock
+                    </div>
+                </div>
+                <p><strong>Valor estimado del inventario:</strong> ${inventory_value:.2f}</p>
+                <p><strong>Fecha de consulta:</strong> {fecha_texto} (America/Guayaquil)</p>
+                <table style="width:100%;border-collapse:collapse;margin-top:24px;">
+                    <thead>
+                        <tr style="background:#123c78;color:#ffffff;">
+                            <th style="padding:11px;text-align:left;">Producto</th>
+                            <th style="padding:11px;text-align:right;">Precio</th>
+                            <th style="padding:11px;text-align:right;">Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+                <p style="margin:24px 0 0;color:#6b7280;font-size:13px;">
+                    Notificación automática generada mediante Resend.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def enviar_correo_resend(destinatario, products, fecha_consulta):
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        raise ResendAPIError("RESEND_API_KEY no está configurada en el servidor.")
+
+    sender = os.environ.get(
+        "RESEND_FROM",
+        "Catálogo de Productos <onboarding@resend.dev>",
+    )
+    response = requests.post(
+        RESEND_API_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": sender,
+            "to": [destinatario],
+            "subject": f"Consulta de productos - {fecha_consulta:%d/%m/%Y}",
+            "html": construir_correo_productos(products, fecha_consulta),
+        },
+        timeout=20,
+    )
+
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+
+    if not response.ok:
+        detail = result.get("message", "Resend rechazó la solicitud de envío.")
+        raise ResendAPIError(detail)
+
+    return result
 
 
 def validar_producto(data, requiere_id=False, requiere_version=False):
@@ -128,14 +261,61 @@ def error_de_bd():
 def get_products():
     try:
         with abrir_bd() as (conn, cursor):
-            cursor.execute(
-                "SELECT id, names, price, stock, version FROM Products ORDER BY id"
-            )
-            products = [
-                producto_a_diccionario(row)
-                for row in cursor.fetchall()
-            ]
+            products = consultar_productos(cursor)
         return jsonify(products), 200
+    except Exception:
+        return error_de_bd()
+
+
+# POST: consultar productos y enviar el resumen por correo mediante Resend
+@app.route("/api/products/email", methods=["POST"])
+@app.route("/api/procesar", methods=["POST"])
+def send_products_email():
+    data = request.get_json(silent=True)
+    destinatario = data.get("email", "").strip() if isinstance(data, dict) else ""
+
+    if (
+        not destinatario
+        or len(destinatario) > 254
+        or not EMAIL_PATTERN.fullmatch(destinatario)
+    ):
+        return jsonify({
+            "mensaje": "Debes proporcionar un correo electrónico válido."
+        }), 400
+
+    try:
+        with abrir_bd() as (conn, cursor):
+            products = consultar_productos(cursor)
+
+        fecha_consulta = datetime.now(ECUADOR_TIMEZONE)
+        resend_result = enviar_correo_resend(
+            destinatario,
+            products,
+            fecha_consulta,
+        )
+        total_stock, inventory_value = crear_resumen_productos(products)
+
+        return jsonify({
+            "procesamiento": "finalizado",
+            "total_productos": len(products),
+            "stock_total": total_stock,
+            "valor_inventario": float(inventory_value),
+            "fecha_consulta": fecha_consulta.isoformat(),
+            "notificacion": "enviada",
+            "message_id": resend_result.get("id"),
+        }), 200
+
+    except ResendAPIError as error:
+        app.logger.exception("Error al enviar el correo mediante Resend")
+        return jsonify({
+            "mensaje": "No se pudo enviar el correo mediante Resend.",
+            "detalle": str(error),
+        }), 502
+    except requests.RequestException:
+        app.logger.exception("Error de red al contactar con Resend")
+        return jsonify({
+            "mensaje": "No se pudo contactar con el servicio de correo."
+        }), 502
     except Exception:
         return error_de_bd()
 
