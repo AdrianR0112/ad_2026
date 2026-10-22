@@ -129,7 +129,7 @@ def enviar_correo_resend(destinatario, products, fecha_consulta):
 
     sender = os.environ.get(
         "RESEND_FROM",
-        "Catálogo de Productos <onboarding@resend.dev>",
+        "Catálogo de Productos <notificaciones@adrianromero.shop>",
     )
     response = requests.post(
         RESEND_API_URL,

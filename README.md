@@ -9,12 +9,11 @@ Configura estas variables de entorno en Render:
 
 ```text
 RESEND_API_KEY=re_...
-RESEND_FROM=Catálogo de Productos <onboarding@resend.dev>
+RESEND_FROM=Catálogo de Productos <notificaciones@adrianromero.shop>
 ```
 
-`onboarding@resend.dev` sirve para pruebas y solo permite enviar al correo de la
-cuenta de Resend. Para aceptar cualquier destinatario, verifica un dominio nuevo
-en Resend y cambia `RESEND_FROM` por una dirección de ese dominio.
+El remitente predeterminado usa el dominio verificado `adrianromero.shop`. En
+producción puedes configurar `RESEND_FROM` con otra dirección del mismo dominio.
 
 ## Envío del resumen
 
