@@ -2,7 +2,6 @@ from flask import Flask, jsonify, request
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from html import escape
 import os
 import re
 import threading
@@ -90,30 +89,6 @@ def crear_resumen_productos(products):
 
 def construir_correo_productos(products, fecha_consulta):
     total_stock, inventory_value = crear_resumen_productos(products)
-    rows = "".join(
-        """
-        <tr>
-            <td style="padding:10px;border-bottom:1px solid #e5e7eb;">{name}</td>
-            <td style="padding:10px;border-bottom:1px solid #e5e7eb;text-align:right;">${price:.2f}</td>
-            <td style="padding:10px;border-bottom:1px solid #e5e7eb;text-align:right;">{stock}</td>
-        </tr>
-        """.format(
-            name=escape(product["name"]),
-            price=product["price"],
-            stock=product["stock"],
-        )
-        for product in products
-    )
-
-    if not rows:
-        rows = """
-        <tr>
-            <td colspan="3" style="padding:16px;text-align:center;color:#6b7280;">
-                No hay productos registrados.
-            </td>
-        </tr>
-        """
-
     fecha_texto = fecha_consulta.strftime("%d/%m/%Y %H:%M:%S")
     return f"""
     <!doctype html>
@@ -137,16 +112,6 @@ def construir_correo_productos(products, fecha_consulta):
                 </div>
                 <p><strong>Valor estimado del inventario:</strong> ${inventory_value:.2f}</p>
                 <p><strong>Fecha de consulta:</strong> {fecha_texto} (America/Guayaquil)</p>
-                <table style="width:100%;border-collapse:collapse;margin-top:24px;">
-                    <thead>
-                        <tr style="background:#123c78;color:#ffffff;">
-                            <th style="padding:11px;text-align:left;">Producto</th>
-                            <th style="padding:11px;text-align:right;">Precio</th>
-                            <th style="padding:11px;text-align:right;">Stock</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows}</tbody>
-                </table>
                 <p style="margin:24px 0 0;color:#6b7280;font-size:13px;">
                     Notificación automática generada mediante Resend.
                 </p>

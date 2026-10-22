@@ -28,4 +28,4 @@ Content-Type: application/json
 ```
 
 El correo incluye la cantidad de productos, el stock total, el valor estimado
-del inventario, la fecha de consulta y el detalle de cada producto.
+del inventario y la fecha de consulta.
